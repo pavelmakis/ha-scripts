@@ -1,0 +1,219 @@
+blueprint:
+  name: Пробуждающий свет
+  description: Автоматизация плавного изменения цвета и яркости лампочки утром.
+  domain: automation
+  input:
+    conditions:
+      name: Дополнительные условия
+      description: Дополнительные условия для запуска автоматизации
+      default: []
+      selector:
+        condition:
+
+    alarm_start_time:
+      name: 🕒 Время начала
+      description: Дата и время начала автоматизации
+      selector:
+        entity:
+          filter:
+            - domain:
+                - input_datetime
+            - domain: sensor
+              device_class: timestamp
+          multiple: false
+
+    offset_from_start_time:
+      name: 🏁 Сдвиг от времени начала
+      description: Время до или после установленного времени начала для начала перехода. Введите секунды или формат HH:MM:SS (например, "-00:05:00" для запуска через 5 минут до времени начала. Удобно, если время начала получается из сущности тревоги и вы хотите отрегулировать, где в цикле яркости вы находитесь, когда срабатывает тревога. См. https://www.home-assistant.io/docs/automation/trigger/#sensors-of-datetime-device-class-with-offsets для предостережений при использовании положительных смещений.
+      default: "-00:00:00"
+      selector:
+        text:
+
+    min_brightness_pct:
+      description: Минимальная яркость в процентах в начале работы автоматизации
+      selector:
+        number:
+          min: 1
+          max: 30
+          unit_of_measurement: "%"
+      default: 1
+      name: Начальная яркость
+
+    max_brightness_pct:
+      description: Максимальная яркость в процентах в конце работы автоматизации
+      selector:
+        number:
+          min: 31
+          max: 100
+          unit_of_measurement: "%"
+      default: 80
+      name: Конечная яркость
+
+    duration:
+      description: Длительность работы автоматизации в минутах
+      selector:
+        number:
+          min: 1
+          max: 60
+      default: 10
+      name: Длительность работы
+
+    steps_per_minute:
+      description: Количество шагов изменения света в минуту
+      selector:
+        number:
+          min: 1
+          max: 12
+      default: 12
+      name: Шагов в минуту
+
+    target_light:
+      description: Один светильник или группа светильников
+      selector:
+        entity:
+          filter:
+            domain: light
+      name: Целевой светильник
+
+    light_timeout:
+      description: Минуты, которые будет работать свет после завершения автоматизации. Значение 0 означает, что свет не будет выключен
+      selector:
+        number:
+          min: 0
+          max: 60
+      default: 5
+      name: Таймаут работы света
+
+    start_g_color:
+      description: Начальное значение зеленого цвета (0-255)
+      selector:
+        number:
+          min: 0
+          max: 255
+      default: 0
+      name: Начальное значение зеленого цвета
+
+    end_g_color:
+      description: Конечное значение зеленого цвета (0-255)
+      selector:
+        number:
+          min: 0
+          max: 255
+      default: 190
+      name: Конечное значение зеленого цвета
+
+    start_b_color:
+      description: Начальное значение синего цвета (0-255)
+      selector:
+        number:
+          min: 0
+          max: 255
+      default: 0
+      name: Начальное значение синего цвета
+
+    end_b_color:
+      description: Конечное значение синего цвета (0-255)
+      selector:
+        number:
+          min: 0
+          max: 255
+      default: 100
+      name: Конечное значение синего цвета
+
+
+triggers:
+  - trigger: time
+    at:
+      entity_id: !input alarm_start_time
+      offset: !input offset_from_start_time
+
+condition:
+  condition: and
+  conditions: !input conditions
+
+variables:
+  min_brightness_pct: !input min_brightness_pct
+  max_brightness_pct: !input max_brightness_pct
+  duration: !input duration
+  steps_per_minute: !input steps_per_minute
+  target_light: !input target_light
+  light_timeout: !input light_timeout
+
+  steps: "{{ duration * steps_per_minute }}"
+  min_brightness: "{{ min_brightness_pct * 2.55 }}"
+  max_brightness: "{{ max_brightness_pct * 2.55 }}"
+  bright_step: "{{ (max_brightness - min_brightness) / steps }}"
+
+  start_g_color: !input start_g_color
+  end_g_color: !input end_g_color
+  g_color_step: "{{ (end_g_color - start_g_color) / steps }}"
+
+  start_b_color: !input start_b_color
+  end_b_color: !input end_b_color
+  b_color_step: "{{ (end_b_color - start_b_color) / steps }}"
+
+  start_time: "{{ as_timestamp(now()) }}"
+  individual_step: "{{ 60 / steps_per_minute }}"
+
+actions:
+  - data:
+      brightness: "{{ min_brightness }}"
+      rgb_color: "{{ [255, start_g_color, start_b_color] }}"
+    target:
+      entity_id: "{{ target_light }}"
+    action: light.turn_on
+  - repeat:
+      until:
+        - condition: or
+          conditions:
+            - condition: template
+              value_template: "{{ is_state(target_light, 'off') }}"
+            - condition: template
+              value_template: "{{ state_attr(target_light, 'brightness') >= max_brightness }}"
+            - condition: template
+              value_template: >-
+                {{ (((as_timestamp(now()) - start_time) / individual_step) |
+                round(0, "ceil")) > steps }}
+      sequence:
+        - variables:
+            steps_to_now: |-
+              {{ ((as_timestamp(now()) - start_time) / individual_step) |
+                round(0, "ceil") }}
+            brightness: >-
+              {{ min_brightness + (bright_step * steps_to_now) | round(0,
+              'ceil') }}
+            g_color: >-
+              {{ start_g_color + (g_color_step * steps_to_now) | round(0,
+              'ceil') }}
+            b_color: >-
+              {{ start_b_color + (b_color_step * steps_to_now) | round(0,
+              'ceil') }}
+        - delay:
+            seconds: "{{ individual_step }}"
+        - if:
+            - condition: template
+              value_template: "{{ not is_state(target_light, 'off') }}"
+          then:
+            - data:
+                brightness: "{{ brightness }}"
+                rgb_color: "{{ [255, g_color, b_color] }}"
+                transition: "{{ individual_step / 2 }}"
+              target:
+                entity_id: "{{ target_light }}"
+              action: light.turn_on
+  - if:
+      - condition: and
+        conditions:
+          - condition: template
+            value_template: "{{ light_timeout != 0 }}"
+          - condition: template
+            value_template: "{{ not is_state(target_light, 'off') }}"
+    then:
+      - delay:
+          minutes: "{{ light_timeout }}"
+      - data: {}
+        target:
+          entity_id: "{{ target_light }}"
+        action: light.turn_off
+
+mode: single
